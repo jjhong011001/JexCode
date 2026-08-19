@@ -1,53 +1,112 @@
 # JexCode
 
-JexCode 是一个面向真实代码库的 Java AI Agent CLI。它以大模型为决策核心，连接代码库、终端、浏览器和 MCP 服务，可完成代码理解、任务规划、跨文件修改、命令执行与结果验证，形成从需求到交付的开发闭环。
+**Java-native AI Agent CLI for repository-scale software engineering.**
 
-## 核心能力
+`Java 17` · `Agent Orchestration` · `Function Calling` · `MCP` · `RAG` · `Multi-Agent` · `HITL`
 
-- **多种执行模式**：支持 ReAct、Plan-and-Execute 与 Multi-Agent，可处理单步操作、复杂任务规划和多角色协作。
-- **代码库理解**：结合文件探索、Ripgrep、JavaParser 语法诊断与 RAG 语义检索定位代码和验证修改。
-- **统一工具调用**：通过 Function Calling 调用文件、终端、搜索等内置工具，并支持同一轮无依赖工具并行执行。
-- **MCP 扩展**：支持 stdio 与 Streamable HTTP，可动态发现并接入外部工具和资源。
-- **上下文与记忆**：提供短期会话、长期记忆、项目级规则、上下文压缩和 Token 预算管理。
-- **安全与恢复**：提供 HITL 审批、路径围栏、命令策略、操作审计及 Side-Git 快照回滚。
-- **多入口交互**：支持流式终端、图片输入、Chrome DevTools 浏览器操作、后台任务、Runtime API 与微信 iLink 文本通道。
+JexCode 是一个面向真实代码库的软件工程 Agent。它并非简单封装大模型对话接口，而是将**任务编排、上下文工程、工具运行时和安全治理**组合成完整执行系统，使模型能够理解代码、规划任务、修改文件、调用终端并验证结果。
 
-## 工作原理
+## 核心设计
+
+| 能力域 | 设计与实现 |
+|---|---|
+| **Agent 编排** | 提供 ReAct、Plan-and-Execute 和 Multi-Agent 三种执行模式，覆盖迭代式工具调用、DAG 任务规划与多角色协作 |
+| **上下文工程** | 统一组装分层 Prompt、项目规则、会话历史、长期记忆、Skill、RAG 结果与 MCP Resources，并实施压缩和 Token 预算控制 |
+| **工具运行时** | 基于 Function Calling 建立统一 Tool Registry，支持内置工具、并行调用、超时取消以及 MCP 动态工具发现 |
+| **代码智能** | 结合实时文件探索、Ripgrep、JavaParser、Embedding 与 SQLite 向量检索完成代码定位、语义检索和修改后诊断 |
+| **安全治理** | 通过 HITL、路径围栏、命令策略、凭证脱敏、操作审计和 Side-Git 快照控制工具执行风险 |
+| **多入口交互** | 提供 JLine 流式 CLI、图片输入、Runtime API、后台任务、Chrome/CDP 浏览器操作和微信 iLink 文本通道 |
+
+## 系统架构
 
 ```mermaid
-flowchart LR
-    U[用户] --> CLI[JLine CLI / Runtime API]
-    CLI --> R{任务路由}
-    R --> A[ReAct]
-    R --> P[Plan-and-Execute]
-    R --> M[Multi-Agent]
-    A --> L[LLM]
-    P --> L
-    M --> L
-    L --> T[Tool Registry]
-    T --> S[HITL / Policy / Audit]
-    S --> B[内置工具]
-    S --> MCP[MCP 工具与资源]
-    B --> E[代码库 / Shell / Web / Browser]
-    MCP --> X[外部服务]
-    B --> L
-    MCP --> L
-    L --> O[流式输出与结果验证]
+flowchart TB
+    subgraph Access[接入层]
+        CLI[JLine CLI]
+        API[Runtime API]
+        WX[WeChat iLink]
+    end
+
+    subgraph Orchestration[Agent 编排层]
+        Router{Task Router}
+        ReAct[ReAct Loop]
+        Plan[Plan + DAG]
+        Team[Planner / Worker / Reviewer]
+    end
+
+    subgraph Context[上下文层]
+        Prompt[Layered Prompt]
+        Memory[Short / Long-term Memory]
+        Retrieval[RAG / Project Context]
+        Skills[Skill Context]
+    end
+
+    subgraph Runtime[模型与工具运行时]
+        LLM[LLM Providers]
+        Registry[Tool Registry]
+        Builtins[Code / Shell / Web / Browser]
+        MCP[MCP Tools / Resources]
+    end
+
+    subgraph Governance[治理与恢复]
+        HITL[HITL Approval]
+        Policy[Path / Command Policy]
+        Audit[Audit Log]
+        Snapshot[Side-Git Snapshot]
+    end
+
+    CLI --> Router
+    API --> Router
+    WX --> Router
+    Router --> ReAct
+    Router --> Plan
+    Router --> Team
+    ReAct <--> LLM
+    Plan <--> LLM
+    Team <--> LLM
+    Prompt --> LLM
+    Memory --> LLM
+    Retrieval --> LLM
+    Skills --> LLM
+    LLM <--> Registry
+    Registry --> HITL --> Policy
+    Policy --> Builtins
+    Policy --> MCP
+    Builtins --> Audit
+    MCP --> Audit
+    Builtins -. result .-> LLM
+    MCP -. result .-> LLM
+    Snapshot -. task boundary .-> Router
 ```
 
-一次任务的基本流程是：JexCode 读取用户输入并组装项目上下文，模型判断是直接回答还是调用工具；工具调用通过安全策略与人工审批后执行，结果回传给模型继续推理，直到完成修改、测试和最终回答。
+一次任务会经过六个阶段：
+
+1. **任务路由**：识别普通任务、计划任务或多 Agent 协作任务。
+2. **上下文组装**：按预算加载项目规则、会话、记忆、Skill 和检索结果。
+3. **模型决策**：模型生成回答或结构化 `tool_calls`。
+4. **策略校验**：工具调用依次经过 HITL、路径与命令策略。
+5. **执行反馈**：内置工具或 MCP 执行结果回灌模型，继续下一轮推理。
+6. **验证交付**：按需运行诊断和测试，以流式方式输出最终结果并保留可恢复快照。
+
+## 执行模式
+
+| 模式 | 工作方式 | 适用任务 |
+|---|---|---|
+| **ReAct** | 模型在“思考—调用工具—观察结果”之间迭代，默认启用 | 代码问答、问题定位、局部修改 |
+| **Plan-and-Execute** | 先生成带依赖关系的执行计划，经确认后按 DAG 批次执行 | 跨模块重构、迁移、复杂交付任务 |
+| **Multi-Agent** | Planner 拆解、Worker 执行、Reviewer 审查并反馈修正 | 需要角色分工和质量复核的综合任务 |
 
 ## 快速开始
 
-### 环境要求
+### 运行要求
 
 - Java 17+
 - Maven 3.8+
-- 可选：Ripgrep，用于提升代码搜索速度
-- 可选：Node.js，用于运行基于 npm 的 MCP Server
-- 可选：Ollama，用于本地 Embedding 和 RAG 检索
+- 可选：Ripgrep，用于加速代码搜索
+- 可选：Node.js，用于运行 npm MCP Server
+- 可选：Ollama，用于本地 Embedding
 
-### 安装与运行
+### 安装
 
 ```bash
 git clone https://github.com/jjhong011001/JexCode.git
@@ -60,74 +119,45 @@ mvn clean package
 java -jar target/jexcode-1.0-SNAPSHOT.jar
 ```
 
-例如使用 GLM：
+最小配置示例：
 
 ```dotenv
 GLM_API_KEY=your_api_key
 GLM_MODEL=glm-5.1
 ```
 
-也可以配置 DeepSeek、StepFun、Kimi、FreeLLMAPI、讯飞星辰 MaaS 或 Agnes。完整配置项见 [`.env.example`](.env.example)。
+JexCode 同时适配 GLM、DeepSeek、StepFun、Kimi、FreeLLMAPI、讯飞星辰 MaaS 和 Agnes，运行中可通过 `/model` 切换 Provider。完整参数见 [`.env.example`](.env.example)。
 
 ## 使用示例
 
-直接用自然语言描述任务，默认进入 ReAct 模式：
+默认使用 ReAct 执行任务：
 
 ```text
-分析这个项目的登录流程，修复空指针问题并运行相关测试。
+分析用户登录模块的调用链，修复可能的空指针问题并运行相关测试。
 ```
 
-复杂任务可先规划再执行：
+复杂任务先规划再执行：
 
 ```text
 /plan 重构订单模块，拆分领域服务，补充单元测试并验证构建结果。
 ```
 
-需要角色分工时使用 Multi-Agent：
+需要多角色协作与复核时：
 
 ```text
 /team 分析当前项目的性能瓶颈，完成优化并审查改动风险。
 ```
 
-常见场景还包括：
+也可以附加本地上下文或图片：
 
 ```text
-# 理解代码
-找出支付回调的入口、调用链和异常处理逻辑。
-
-# 跨文件修改
-为用户模块增加分页查询接口，并补充参数校验和测试。
-
-# 浏览器操作
-打开本地页面，检查控制台报错并验证表单提交流程。
-
-# 图片输入
-分析 @image:/path/to/screenshot.png 中的报错并定位相关代码。
+解释 @src/main/java/com/example/OrderService.java 的核心流程。
+分析 @image:/path/to/error.png 中的报错并定位相关代码。
 ```
 
-## 常用命令
+## MCP 工具生态
 
-| 命令 | 作用 |
-|---|---|
-| `/plan <任务>` | 使用 Plan-and-Execute 执行复杂任务 |
-| `/team <任务>` | 使用 Multi-Agent 协作执行任务 |
-| `/model <provider>` | 查看或切换模型 |
-| `/index [路径]` | 为代码库建立语义索引 |
-| `/search <问题>` | 使用 RAG 进行代码语义检索 |
-| `/mcp` | 查看 MCP Server 和工具状态 |
-| `/skill list` | 查看当前可用 Skill |
-| `/browser connect` | 连接可复用登录态的 Chrome |
-| `/memory list` | 查看长期记忆 |
-| `/save <事实>` | 保存项目级长期记忆 |
-| `/compact` | 手动压缩当前会话上下文 |
-| `/snapshot` | 查看 Side-Git 快照 |
-| `/restore <N>` | 恢复到指定的任务前快照 |
-| `/hitl on` | 开启危险操作人工审批 |
-| `/clear` | 清空当前会话，保留长期记忆 |
-
-## MCP 扩展
-
-JexCode 会合并用户级 `~/.jexcode/mcp.json` 与项目级 `.jexcode/mcp.json`，项目配置中的同名 Server 优先。MCP 工具会以 `mcp__{server}__{tool}` 的形式动态注册到 Agent。
+JexCode 同时支持 stdio 与 Streamable HTTP。启动时会加载用户级 `~/.jexcode/mcp.json` 和项目级 `.jexcode/mcp.json`，完成初始化、能力协商和工具发现，再将工具注册为 `mcp__{server}__{tool}` 供模型调用。
 
 ```json
 {
@@ -146,53 +176,85 @@ JexCode 会合并用户级 `~/.jexcode/mcp.json` 与项目级 `.jexcode/mcp.json
 }
 ```
 
-`command` 用于 stdio Server，`url` 用于 Streamable HTTP Server。`${PROJECT_DIR}`、`${HOME}` 和环境变量可在配置中引用，敏感凭证应保存在 `.env` 或系统环境变量中。
+- `command` 定义 stdio Server，`url` 定义 Streamable HTTP Server。
+- 项目级同名配置覆盖用户级配置。
+- `${PROJECT_DIR}`、`${HOME}` 和 `${VAR}` 支持运行时变量展开。
+- MCP Tools、Resources 和变更通知统一接入 Tool Registry。
+- Token、Key 和 Authorization 等凭证只从 `.env` 或系统环境变量注入。
 
-## 配置与数据目录
+## 上下文与记忆
 
-| 位置 | 用途 |
+| 类型 | 作用 | 生命周期 |
+|---|---|---|
+| **会话历史** | 保存当前对话和工具调用链 | 当前会话，可压缩或清空 |
+| **项目上下文** | 通过 `JEXCODE.md` 固化项目架构、命令和约束 | 随代码库共享 |
+| **长期记忆** | 保存用户明确要求记录的稳定事实与偏好 | 跨会话，可检索和删除 |
+| **RAG 索引** | 对代码分块、向量化并进行语义召回 | 持久化到 SQLite |
+| **Skill Context** | 根据任务按需加载专业操作手册 | 单次任务按需注入 |
+
+上下文接近模型窗口上限时，JexCode 会压缩较早的会话内容，并结合当前 Provider 的上下文窗口实施 Token 预算控制，避免无限累积历史消息。
+
+## 安全与可恢复性
+
+工具调用不是直接执行，而是经过统一治理链路：
+
+```text
+Tool Call → HITL → Tool Registry → PathGuard / CommandGuard → Execute → Audit
+```
+
+- **最小访问边界**：文件工具只能访问当前项目根目录。
+- **危险命令拦截**：拒绝明显破坏性命令，并设置执行超时。
+- **人工审批**：写文件、执行命令和外部 MCP 调用可要求用户确认。
+- **操作审计**：危险调用按 JSONL 记录，敏感参数自动脱敏。
+- **独立快照**：Side-Git 在任务边界保存工作区状态，不污染业务仓库历史。
+
+## 常用命令
+
+| 分类 | 命令 |
 |---|---|
-| `.env` | 模型、Embedding、搜索和运行参数 |
-| `~/.jexcode/config.json` | 用户级模型配置 |
-| `~/.jexcode/mcp.json` | 用户级 MCP 配置 |
-| `.jexcode/mcp.json` | 项目级 MCP 配置 |
-| `JEXCODE.md` | 可提交到仓库的项目规则与上下文 |
-| `JEXCODE.local.md` | 不提交的个人项目规则 |
-| `~/.jexcode/memory/` | 长期记忆 |
-| `~/.jexcode/logs/` | 运行日志 |
-| `~/.jexcode/audit/` | 危险操作审计日志 |
-| `~/.jexcode/snapshots/` | Side-Git 快照 |
+| 执行模式 | `/plan <任务>`、`/team <任务>`、`/cancel` |
+| 模型与上下文 | `/model`、`/context`、`/compact`、`/clear` |
+| 代码检索 | `/index [路径]`、`/search <问题>`、`/graph <类名>` |
+| MCP 与 Skill | `/mcp`、`/mcp restart <name>`、`/skill list`、`/skill show <name>` |
+| 记忆 | `/memory list`、`/memory search <关键词>`、`/save <事实>` |
+| 安全与恢复 | `/hitl on`、`/policy`、`/audit`、`/snapshot`、`/restore <N>` |
+| 浏览器 | `/browser status`、`/browser connect`、`/browser disconnect` |
+| 任务与会话 | `/task`、`/task add <任务>`、`/export`、`/exit` |
 
-## 安全机制
+## 技术栈
 
-- 文件工具只能访问当前项目根目录，阻止路径越界。
-- 命令策略会拒绝明显破坏性操作，并为命令设置超时。
-- HITL 可在写文件、执行命令和调用外部 MCP 工具前请求确认。
-- 审计日志会记录危险工具调用，并对 Token、Key 和 Authorization 等字段脱敏。
-- Side-Git 在任务前后创建独立快照，不改写业务仓库的 Git 历史。
+| 模块 | 技术 |
+|---|---|
+| Runtime | Java 17、Maven |
+| Terminal UI | JLine 4、Lanterna |
+| LLM Integration | OkHttp、Jackson、SSE、Function Calling |
+| Code Intelligence | Ripgrep、JavaParser、Embedding、RAG |
+| Storage | SQLite、JSONL |
+| Tool Ecosystem | MCP stdio、Streamable HTTP、Chrome DevTools Protocol |
+| Engineering | JGit、SLF4J、Logback、JUnit 5 |
 
 ## 项目结构
 
 ```text
 src/main/java/com/jexcode/
-├── agent/       # ReAct、Plan-and-Execute、Multi-Agent
-├── cli/         # 命令行入口、解析与补全
-├── llm/         # 模型抽象与 Provider 实现
-├── tool/        # 内置工具与统一注册中心
-├── mcp/         # MCP 协议、传输、资源与配置
-├── memory/      # 会话、长期记忆与上下文压缩
-├── rag/         # 代码索引、Embedding 与语义检索
+├── agent/       # Agent 执行与编排
+├── cli/         # CLI 入口、命令解析与补全
+├── llm/         # LLM 抽象与 Provider
 ├── prompt/      # 分层 Prompt 组装
+├── memory/      # 会话、长期记忆与上下文压缩
+├── rag/         # 代码索引与语义检索
+├── tool/        # 内置工具与 Tool Registry
+├── mcp/         # MCP 协议、传输和资源
+├── skill/       # Skill 发现与按需加载
 ├── hitl/        # 人工审批
-├── policy/      # 路径、命令与审计策略
+├── policy/      # 路径、命令和审计策略
 ├── snapshot/    # Side-Git 快照与恢复
 ├── browser/     # Chrome/CDP 会话管理
-├── skill/       # Skill 发现、加载与状态管理
 ├── runtime/     # 后台任务与 Runtime API
-└── render/      # Inline、Lanterna 与 Plain 渲染器
+└── render/      # Inline、Lanterna 与 Plain 渲染
 ```
 
-更详细的设计说明见 [`docs/`](docs/)。
+配置与运行数据默认保存在 `~/.jexcode/`，项目级配置位于 `.jexcode/`。更详细的设计说明见 [`docs/`](docs/)。
 
 ## 开发与测试
 
@@ -204,4 +266,4 @@ mvn test -Pquick
 mvn test -DskipTests=false
 ```
 
-项目入口为 `com.jexcode.cli.Main`，默认构建产物为 `target/jexcode-1.0-SNAPSHOT.jar`。
+主入口为 `com.jexcode.cli.Main`，默认构建产物为 `target/jexcode-1.0-SNAPSHOT.jar`。
