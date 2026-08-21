@@ -55,13 +55,16 @@ class MainInputNormalizationTest {
     }
 
     @Test
-    void startupBannerUsesOpenLayoutWithoutRightBorder() {
+    void startupBannerUsesDistinctJxMarkWithoutRightBorder() {
         List<String> lines = Main.startupBannerLines();
 
         assertTrue(lines.stream().anyMatch(line -> line.contains("JexCode")));
         assertTrue(lines.stream().anyMatch(line -> line.contains("JX")));
         assertTrue(lines.stream().anyMatch(line -> line.contains("v16.1.0")));
-        assertTrue(lines.stream().anyMatch(line -> line.contains("████████")));
+        assertTrue(lines.stream().anyMatch(line -> line.contains("╚█████╔╝")),
+                "banner should contain the curved base of the J mark");
+        assertTrue(lines.stream().anyMatch(line -> line.contains("╚██╗██╔╝")),
+                "banner should contain two crossing strokes for the X mark");
         assertTrue(lines.stream().anyMatch(line -> line.contains("Tips for getting started")));
         assertTrue(lines.stream().anyMatch(line -> line.contains("@path")));
         assertTrue(lines.stream().noneMatch(line -> line.contains("for shortcuts")));
