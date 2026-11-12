@@ -145,6 +145,10 @@ src/main/java/com/jexcode/
 - 三条路径都走 `executeTools()`，不手写 for-loop
 - 默认最多 4 个并发，结果保持原始顺序
 
+### Side-Git 快照
+
+- 在快照目录内初始化独立仓库。创建和恢复快照时通过 JGit 显式指定项目工作树，保留项目原有的 `.git`。
+
 ### Web + Browser
 
 - 每轮 system prompt 会注入当前日期/时区，用于相对日期理解；联网搜索不再由 prompt 的 Freshness Policy 强制，是否调用 `web_search` 交给模型基于工具 schema 和用户目标自主决定。

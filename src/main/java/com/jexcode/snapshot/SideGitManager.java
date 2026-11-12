@@ -112,7 +112,8 @@ public class SideGitManager {
         TurnSnapshot target = preTurns.get(normalizedOffset - 1);
         TurnSnapshot current = preRestoreSnapshot("restore-" + Instant.now().toEpochMilli(),
                 "Before restoring " + target.shortCommitId());
-        try (Git git = openGit(); Repository repository = git.getRepository()) {
+        try (Git git = openGit()) {
+            Repository repository = git.getRepository();
             Map<String, ObjectId> targetTree = treeEntries(repository, ObjectId.fromString(target.commitId()));
             Map<String, ObjectId> currentTree = current == null
                     ? Map.of()
@@ -174,21 +175,23 @@ public class SideGitManager {
         return config;
     }
 
-    private Git openGit() throws IOException, GitAPIException {
+    private Git openGit() throws IOException {
         Files.createDirectories(gitDir.getParent());
         if (!Files.exists(gitDir.resolve("config"))) {
-            Git.init()
+            // Initializing with the project as the work tree would write a .git pointer there.
+            try (Repository sideRepository = new FileRepositoryBuilder()
                     .setGitDir(gitDir.toFile())
-                    .setDirectory(projectRoot.toFile())
-                    .call()
-                    .close();
+                    .setWorkTree(gitDir.getParent().toFile())
+                    .build()) {
+                sideRepository.create(false);
+            }
         }
         writeExcludeFile();
         Repository repository = new FileRepositoryBuilder()
                 .setGitDir(gitDir.toFile())
                 .setWorkTree(projectRoot.toFile())
                 .build();
-        return new Git(repository);
+        return new Git(repository, true);
     }
 
     private void writeExcludeFile() throws IOException {
