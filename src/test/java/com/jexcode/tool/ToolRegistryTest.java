@@ -219,11 +219,11 @@ class ToolRegistryTest {
                 """), args -> "step-fetch:" + args);
 
         String result = registry.executeTool("web_fetch",
-                "{\"url\":\"https://platform.stepfun.com/docs/zh/step-plan/integrations/search-mcp\",\"max_chars\":1200}");
+                "{\"url\":\"https://203.0.113.10/docs\",\"max_chars\":1200}");
 
         assertTrue(result.contains("[StepSearch]"));
         assertTrue(result.contains("step-fetch"));
-        assertTrue(result.contains("\"url\":\"https://platform.stepfun.com/docs/zh/step-plan/integrations/search-mcp\""));
+        assertTrue(result.contains("\"url\":\"https://203.0.113.10/docs\""));
         assertTrue(result.contains("\"max_chars\":1200"));
     }
 

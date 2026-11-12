@@ -1,12 +1,14 @@
 package com.jexcode.cli;
 
 import com.jexcode.llm.LlmClient;
+import com.jexcode.runtime.CancellationContext;
 import org.jline.reader.History;
 import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
 import org.jline.reader.impl.history.DefaultHistory;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
+import org.jline.terminal.impl.DumbTerminal;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
@@ -16,6 +18,9 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -321,6 +326,28 @@ class MainInputNormalizationTest {
     @Test
     void readEscCancelHandlesNullTerminalSafely() {
         assertFalse(Main.readEscCancel(null));
+    }
+
+    @Test
+    void escWaitsForCancelledRunToFinishBeforeReturning() throws Exception {
+        AtomicBoolean finished = new AtomicBoolean();
+        try (Terminal terminal = new DumbTerminal(
+                new ByteArrayInputStream(new byte[]{27}), new ByteArrayOutputStream())) {
+            String result = Main.runWithCancelSupport(terminal, () -> {
+                try {
+                    new CountDownLatch(1).await(2, TimeUnit.SECONDS);
+                    return "timed out";
+                } catch (InterruptedException e) {
+                    assertTrue(CancellationContext.isCancelled());
+                    Thread.sleep(50);
+                    finished.set(true);
+                    return "worker finished";
+                }
+            });
+
+            assertTrue(result.contains("已取消"));
+            assertTrue(finished.get());
+        }
     }
 
     private static void restoreProperty(String key, String value) {

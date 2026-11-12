@@ -7,7 +7,8 @@
 ### 后台任务
 
 - `DurableTaskManager`：SQLite 持久化任务队列
-- 默认数据库：`~/.jexcode/tasks/tasks.db`
+- 每个真实项目目录使用独立的数据库，默认位于 `~/.jexcode/tasks/<工作区标识>/tasks.db`。`JEXCODE_TASK_DIR` 或 `-Djexcode.task.dir` 可覆盖父目录。
+- 旧版共用的 `tasks.db` 继续保留在父目录下。由于其中的任务没有项目归属，未完成的任务需要在对应项目重新提交。
 - 生命周期：
   - `enqueued`
   - `running`
@@ -15,7 +16,8 @@
   - `failed`
   - `canceled`
 - Worker Pool：默认 2 个后台 worker，可用 `JEXCODE_TASK_WORKERS` 或 `-Djexcode.task.workers` 覆盖
-- 进程启动时把上次残留的 `running` 任务恢复为 `enqueued`
+- 每个后台任务有独立的取消信号。取消时先保存 `canceled` 状态，再关闭该任务的模型 HTTP 调用并中断对应 worker。
+- 同项目的会话共享队列。获得文件锁的实例领取任务，并把上次残留的 `running` 任务恢复为 `enqueued`。其他会话可查看、提交和取消任务，执行实例退出后可接管队列。
 - CLI 命令：
   - `/task` 或 `/task list [N]`
   - `/task add <任务内容>`
@@ -59,7 +61,6 @@ java -jar target/jexcode-1.0-SNAPSHOT.jar serve --http --port 8080
 
 - Runtime API MVP 是事件回放式 SSE，不做长连接持续阻塞推送
 - 后台任务 runner 使用 headless ReAct Agent，不复用交互式 TUI 的 HITL 输入
-- 后台任务取消通过线程中断 + 状态标记实现；正在进行的远端 LLM HTTP 调用能否立即停止取决于底层 client 边界
 - Runtime API 当前不模拟完整 OpenAI Assistants API schema，只保留兼容方向的 threads / turns / events 主路径
 
 ## 验证

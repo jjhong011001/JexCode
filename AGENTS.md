@@ -145,12 +145,27 @@ src/main/java/com/jexcode/
 - 三条路径都走 `executeTools()`，不手写 for-loop
 - 默认最多 4 个并发，结果保持原始顺序
 
+### 任务取消
+
+- CLI、TUI、微信和后台任务在执行线程绑定各自的 `CancellationToken`。复用线程执行下一项任务前清理上下文，新建的并行工具线程继承当前任务的 token。
+- 取消时通过 token 关闭当前模型 HTTP 调用，并中断任务线程。CLI 等待本轮执行退出再接受下一条输入，后台任务保留用户取消的最终状态。
+
+### 后台任务队列
+
+- `/task` 使用当前 ToolRegistry 工作区的真实路径定位 SQLite 队列，执行器使用同一路径。一个 CLI 会话切换项目时，已启动的队列继续处理原项目任务。
+- 同项目的会话共享队列，持有文件锁的实例负责领取任务、恢复上次中断的任务和处理跨会话取消。释放锁前等待原 worker 退出。
+
+### Side-Git 快照
+
+- 在快照目录内初始化独立仓库。创建和恢复快照时通过 JGit 显式指定项目工作树，保留项目原有的 `.git`。
+
 ### Web + Browser
 
 - 每轮 system prompt 会注入当前日期/时区，用于相对日期理解；联网搜索不再由 prompt 的 Freshness Policy 强制，是否调用 `web_search` 交给模型基于工具 schema 和用户目标自主决定。
 - “当前项目/当前 README/当前文件/当前代码”等表达属于本地上下文任务，通常应由模型选择 `glob_files` / `grep_code` / `read_file`，而不是联网工具。
 - 当前模型为 `step-3.7-flash*` 且自动/显式 `step_search` MCP 的 `web_search` / `web_fetch` 已就绪时，内置 `web_search` / `web_fetch` 会优先转调 StepSearch MCP；未就绪或调用失败时回退到原 SearchProvider / WebFetcher。
 - 已知 URL 先 `web_fetch`，SPA/防爬墙 fallback 到 Chrome DevTools MCP
+- 本地 `web_fetch` 在发出每一跳请求前校验 URL。正文按最终 URL 解析，取消任务时终止抓取请求。
 - 浏览器读取优先 `take_snapshot`，不默认 `take_screenshot`
 - 公开页面不要提前切 shared 模式
 

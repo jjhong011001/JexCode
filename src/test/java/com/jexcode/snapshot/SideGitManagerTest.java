@@ -1,5 +1,6 @@
 package com.jexcode.snapshot;
 
+import org.eclipse.jgit.api.Git;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -37,6 +38,25 @@ class SideGitManagerTest {
         assertEquals("before", Files.readString(project.resolve("a.txt")));
         assertFalse(Files.exists(project.resolve("new.txt")));
         assertTrue(Files.exists(manager.gitDir().resolve("config")));
+        assertFalse(Files.exists(project.resolve(".git")));
+    }
+
+    @Test
+    void preservesExistingGitFile(@TempDir Path externalGitDir) throws Exception {
+        Path project = Files.createDirectory(tempDir.resolve("project"));
+        Path gitFile = project.resolve(".git");
+        Path actualGitDir = externalGitDir.resolve(".git");
+        try (Git git = Git.init().setDirectory(project.toFile()).setGitDir(actualGitDir.toFile()).call()) {
+            String originalGitFile = Files.readString(gitFile);
+            Files.writeString(project.resolve("a.txt"), "content");
+
+            SideGitManager manager = new SideGitManager(project,
+                    new SnapshotConfig(true, tempDir.resolve("snapshots"), 50, List.of(".git")));
+            manager.preTurnSnapshot("turn-1", "before task");
+
+            assertEquals(originalGitFile, Files.readString(gitFile));
+            assertTrue(git.status().call().getUntracked().contains("a.txt"));
+        }
     }
 
     @Test

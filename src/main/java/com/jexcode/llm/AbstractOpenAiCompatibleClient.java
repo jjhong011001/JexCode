@@ -4,10 +4,13 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.jexcode.runtime.CancellationContext;
+import com.jexcode.runtime.CancellationToken;
 import okhttp3.*;
 import okio.BufferedSource;
 
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -71,7 +74,10 @@ public abstract class AbstractOpenAiCompatibleClient implements LlmClient {
         customizeRequest(request);
         Request builtRequest = request.build();
 
-        try (Response response = httpClient().newCall(builtRequest).execute()) {
+        Call call = httpClient().newCall(builtRequest);
+        CancellationToken token = CancellationContext.current();
+        Runnable unregister = token == null ? () -> {} : token.onCancel(call::cancel);
+        try (Response response = call.execute()) {
             ResponseBody responseBodyObj = response.body();
             if (!response.isSuccessful()) {
                 String errorBody = responseBodyObj != null ? responseBodyObj.string() : "无响应体";
@@ -90,7 +96,7 @@ public abstract class AbstractOpenAiCompatibleClient implements LlmClient {
             int outputTokens = 0;
             int cachedInputTokens = 0;
 
-            while (!source.exhausted()) {
+            while (!CancellationContext.isCancelled()) {
                 String line = source.readUtf8Line();
                 if (line == null) {
                     break;
@@ -155,6 +161,10 @@ public abstract class AbstractOpenAiCompatibleClient implements LlmClient {
                 mergeToolCallDeltas(toolAccumulators, delta.path("tool_calls"));
             }
 
+            if (CancellationContext.isCancelled()) {
+                throw new InterruptedIOException("模型请求已取消");
+            }
+
             List<ToolCall> toolCalls = buildToolCalls(toolAccumulators);
             if (content.isEmpty() && reasoning.isEmpty() && (toolCalls == null || toolCalls.isEmpty())) {
                 throw new IOException("API返回空内容，请检查 provider/model 配置或该模型是否支持当前请求参数");
@@ -169,6 +179,8 @@ public abstract class AbstractOpenAiCompatibleClient implements LlmClient {
                     outputTokens,
                     cachedInputTokens
             );
+        } finally {
+            unregister.run();
         }
     }
 

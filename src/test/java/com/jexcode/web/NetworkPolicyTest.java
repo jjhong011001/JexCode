@@ -54,9 +54,15 @@ class NetworkPolicyTest {
     }
 
     @Test
+    void rejectsIpv6UniqueLocalAddresses() {
+        assertNotNull(policy.checkUrl("http://[fc00::1]/"));
+        assertNotNull(policy.checkUrl("https://[fd00::1234]/"));
+    }
+
+    @Test
     void allowsPublicHttps() {
-        assertNull(policy.checkUrl("https://example.com/path"));
-        assertNull(policy.checkUrl("https://example.com"));
+        assertNull(policy.checkUrl("https://203.0.113.10/path"));
+        assertNull(policy.checkUrl("https://203.0.113.10"));
     }
 
     @Test

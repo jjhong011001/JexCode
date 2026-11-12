@@ -10,7 +10,6 @@ import com.jexcode.runtime.CancellationToken;
 
 import java.nio.file.Path;
 import java.util.Objects;
-import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -62,10 +61,12 @@ public class WechatAgentSession implements AutoCloseable {
         if (isRunning()) {
             throw new IllegalStateException("当前已有微信任务在运行");
         }
-        renderer.resetWechatStream();
-        runningToken = CancellationContext.startRun();
-        Callable<String> task = () -> agent.run(prompt);
-        running = executor.submit(task);
+        CancellationToken token = new CancellationToken();
+        running = executor.submit(() -> CancellationContext.call(token, () -> {
+            renderer.resetWechatStream();
+            return agent.run(prompt);
+        }));
+        runningToken = token;
         return running;
     }
 
@@ -88,10 +89,7 @@ public class WechatAgentSession implements AutoCloseable {
             Throwable cause = e.getCause();
             return "执行失败: " + (cause == null || cause.getMessage() == null ? "未知错误" : cause.getMessage());
         } finally {
-            if (runningToken != null) {
-                CancellationContext.clear(runningToken);
-                runningToken = null;
-            }
+            runningToken = null;
             running = null;
         }
     }

@@ -1,5 +1,10 @@
 package com.jexcode.web;
 
+import com.jexcode.runtime.CancellationContext;
+import com.jexcode.runtime.CancellationToken;
+import okhttp3.Call;
+import okhttp3.HttpUrl;
+import okhttp3.Interceptor;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
@@ -20,6 +25,7 @@ import java.util.concurrent.TimeUnit;
  * <ul>
  *   <li>5MB 响应体上限，超出截断（流式读，避免 OOM）</li>
  *   <li>30s 整体超时（OkHttp callTimeout）</li>
+ *   <li>逐跳校验 HTTP 重定向目标，保持网络访问围栏</li>
  *   <li>不处理 JS 渲染、不处理登录态 —— 那是第 13/14 期的事</li>
  *   <li>遇到 4xx/5xx 直接抛 IOException，由调用方决定如何向用户呈现</li>
  * </ul>
@@ -32,6 +38,7 @@ public class WebFetcher {
     private static final Logger log = LoggerFactory.getLogger(WebFetcher.class);
     public static final int DEFAULT_MAX_BYTES = 5 * 1024 * 1024;
     private static final long DEFAULT_TIMEOUT_SECONDS = 30L;
+    private static final int MAX_REDIRECTS = 20;
 
     private final OkHttpClient httpClient;
     private final int maxBytes;
@@ -49,8 +56,15 @@ public class WebFetcher {
     }
 
     WebFetcher(int maxBytes, OkHttpClient httpClient) {
+        this(maxBytes, httpClient, new NetworkPolicy());
+    }
+
+    WebFetcher(int maxBytes, OkHttpClient httpClient, NetworkPolicy policy) {
         this.maxBytes = maxBytes;
-        this.httpClient = httpClient;
+        OkHttpClient.Builder builder = httpClient.newBuilder().followRedirects(false);
+        // Keep all hops within the same OkHttp call, including its timeout and cancellation.
+        builder.interceptors().add(0, chain -> followRedirects(chain, policy));
+        this.httpClient = builder.build();
     }
 
     public RawResponse fetch(String url) throws IOException {
@@ -64,7 +78,10 @@ public class WebFetcher {
                 .build();
 
         log.info("web_fetch: GET {}", url);
-        try (Response response = httpClient.newCall(request).execute()) {
+        Call call = httpClient.newCall(request);
+        CancellationToken token = CancellationContext.current();
+        Runnable unregister = token == null ? () -> {} : token.onCancel(call::cancel);
+        try (Response response = call.execute()) {
             if (!response.isSuccessful()) {
                 throw new IOException("HTTP " + response.code() + " " + response.message());
             }
@@ -78,7 +95,32 @@ public class WebFetcher {
             boolean truncated = bytes.length >= maxBytes;
             String text = new String(bytes, charset);
             String contentType = response.header("Content-Type", "");
-            return new RawResponse(url, text, contentType, charset.name(), truncated);
+            return new RawResponse(response.request().url().toString(), text, contentType, charset.name(), truncated);
+        } finally {
+            unregister.run();
+        }
+    }
+
+    private static Response followRedirects(Interceptor.Chain chain, NetworkPolicy policy) throws IOException {
+        Request request = chain.request();
+        for (int redirects = 0; ; redirects++) {
+            String reason = policy.checkUrl(request.url().toString());
+            if (reason != null) {
+                throw new IOException("网络访问被拒绝: " + reason);
+            }
+
+            Response response = chain.proceed(request);
+            String location = response.isRedirect() ? response.header("Location") : null;
+            HttpUrl destination = location == null ? null : request.url().resolve(location);
+            if (destination == null) {
+                return response;
+            }
+
+            response.close();
+            if (redirects >= MAX_REDIRECTS) {
+                throw new IOException("重定向次数超出上限 (" + MAX_REDIRECTS + ")");
+            }
+            request = request.newBuilder().url(destination).build();
         }
     }
 
