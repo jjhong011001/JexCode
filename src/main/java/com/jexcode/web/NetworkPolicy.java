@@ -1,5 +1,6 @@
 package com.jexcode.web;
 
+import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.URI;
 import java.net.UnknownHostException;
@@ -120,6 +121,9 @@ public class NetworkPolicy {
                 }
                 if (addr.isSiteLocalAddress()) {
                     return "禁止访问站内地址（" + addr.getHostAddress() + "）";
+                }
+                if (addr instanceof Inet6Address && (addr.getAddress()[0] & 0xfe) == 0xfc) {
+                    return "禁止访问 IPv6 本地地址（" + addr.getHostAddress() + "）";
                 }
             }
         } catch (UnknownHostException e) {

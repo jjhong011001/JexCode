@@ -160,6 +160,7 @@ src/main/java/com/jexcode/
 - “当前项目/当前 README/当前文件/当前代码”等表达属于本地上下文任务，通常应由模型选择 `glob_files` / `grep_code` / `read_file`，而不是联网工具。
 - 当前模型为 `step-3.7-flash*` 且自动/显式 `step_search` MCP 的 `web_search` / `web_fetch` 已就绪时，内置 `web_search` / `web_fetch` 会优先转调 StepSearch MCP；未就绪或调用失败时回退到原 SearchProvider / WebFetcher。
 - 已知 URL 先 `web_fetch`，SPA/防爬墙 fallback 到 Chrome DevTools MCP
+- 本地 `web_fetch` 在发出每一跳请求前校验 URL。正文按最终 URL 解析，取消任务时终止抓取请求。
 - 浏览器读取优先 `take_snapshot`，不默认 `take_screenshot`
 - 公开页面不要提前切 shared 模式
 
