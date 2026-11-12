@@ -41,6 +41,7 @@ import com.jexcode.runtime.api.RuntimeApiServer;
 import com.jexcode.runtime.api.RuntimeThreadStore;
 import com.jexcode.runtime.task.DurableTaskManager;
 import com.jexcode.runtime.task.TaskCommandFormatter;
+import com.jexcode.runtime.task.WorkspaceTaskQueues;
 import com.jexcode.snapshot.RestoreResult;
 import com.jexcode.snapshot.SnapshotService;
 import com.jexcode.snapshot.TurnSnapshot;
@@ -222,7 +223,9 @@ public class Main {
         }
         AtomicReference<LlmClient> llmClientRef = new AtomicReference<>(llmClient);
 
-        try (Terminal terminal = TerminalBuilder.builder().system(true).dumb(true).build()) {
+        try (Terminal terminal = TerminalBuilder.builder().system(true).dumb(true).build();
+             WorkspaceTaskQueues taskQueues = new WorkspaceTaskQueues(workspace ->
+                     prompt -> runHeadlessTask(prompt, llmClientRef.get(), workspace))) {
             refreshTerminalColumns(terminal);
             TerminalHitlHandler terminalHitlHandler = new TerminalHitlHandler(false);
             SwitchableHitlHandler hitlHandler = new SwitchableHitlHandler(terminalHitlHandler);
@@ -316,9 +319,8 @@ public class Main {
             reactAgent.setExternalContextSupplier(mcpServerManager::resourceIndexForPrompt);
             reactAgent.setSkillRegistry(skillRegistry);
             reactAgent.setSkillContextBuffer(skillContextBuffer);
-            DurableTaskManager taskManager = openTaskManager(llmClientRef);
-            taskManager.start();
-            Runtime.getRuntime().addShutdownHook(new Thread(taskManager::close, "jexcode-task-shutdown"));
+            taskQueues.forWorkspace(Path.of(hitlToolRegistry.getProjectPath()));
+            Runtime.getRuntime().addShutdownHook(new Thread(taskQueues::close, "jexcode-task-shutdown"));
             WechatRuntimeController wechatRuntime = new WechatRuntimeController(renderer);
             Runtime.getRuntime().addShutdownHook(new Thread(wechatRuntime::stop, "jexcode-wechat-shutdown"));
             renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
@@ -682,7 +684,13 @@ public class Main {
                         continue;
                     }
                     case TASK -> {
-                        printMcpCommandResult(ui, TaskCommandFormatter.handle(taskManager, command.payload()));
+                        try {
+                            Path workspace = Path.of(reactAgent.getToolRegistry().getProjectPath());
+                            DurableTaskManager queue = taskQueues.forWorkspace(workspace);
+                            printMcpCommandResult(ui, TaskCommandFormatter.handle(queue, command.payload()));
+                        } catch (IllegalStateException e) {
+                            ui.println("❌ " + e.getMessage());
+                        }
                         continue;
                     }
                     case SKILL_LIST -> {
@@ -866,10 +874,11 @@ public class Main {
         }
         int port = parseServePort(args, 8080);
         try {
+            Path workspace = Path.of(".").toRealPath();
             RuntimeThreadStore store = new RuntimeThreadStore(RuntimeThreadStore.defaultDbPath());
             RuntimeApiServer server = new RuntimeApiServer(
                     store,
-                    prompt -> runHeadlessTask(prompt, client),
+                    prompt -> runHeadlessTask(prompt, client, workspace),
                     port,
                     RuntimeApiServer.configuredApiKey());
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -904,19 +913,11 @@ public class Main {
         return defaultPort;
     }
 
-    private static String runHeadlessTask(String prompt, LlmClient llmClient) {
+    private static String runHeadlessTask(String prompt, LlmClient llmClient, Path workspace) {
         ToolRegistry registry = new ToolRegistry();
-        registry.setProjectPath(Path.of(".").toAbsolutePath().normalize().toString());
+        registry.setProjectPath(workspace.toString());
         Agent agent = new Agent(llmClient, registry);
         return agent.run(prompt);
-    }
-
-    private static DurableTaskManager openTaskManager(AtomicReference<LlmClient> llmClientRef) {
-        try {
-            return DurableTaskManager.openDefault(prompt -> runHeadlessTask(prompt, llmClientRef.get()));
-        } catch (Exception e) {
-            throw new IllegalStateException("后台任务管理器初始化失败: " + e.getMessage(), e);
-        }
     }
 
     private static String handleWechatCommand(String payload,

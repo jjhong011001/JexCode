@@ -8,6 +8,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -107,6 +108,83 @@ class DurableTaskManagerTest {
             assertEquals("用户取消", canceledTask.error());
         } finally {
             releaseOther.countDown();
+        }
+    }
+
+    @Test
+    void anotherManagerDoesNotResetLiveTaskAndCanCancelIt(@TempDir Path tempDir) throws Exception {
+        Path database = tempDir.resolve("tasks.db");
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch canceled = new CountDownLatch(1);
+        AtomicInteger unexpectedRuns = new AtomicInteger();
+        try (DurableTaskManager owner = new DurableTaskManager(database, prompt -> {
+            started.countDown();
+            try {
+                Thread.sleep(5000);
+                return "too late";
+            } catch (InterruptedException e) {
+                if (CancellationContext.isCancelled()) {
+                    canceled.countDown();
+                }
+                throw e;
+            }
+        }, 1)) {
+            owner.start();
+            DurableTask task = owner.enqueue("cancel from another window");
+            assertTrue(started.await(5, TimeUnit.SECONDS));
+
+            try (DurableTaskManager second = new DurableTaskManager(database, prompt -> {
+                unexpectedRuns.incrementAndGet();
+                return "duplicate";
+            }, 1)) {
+                second.start();
+                assertEquals(TaskStatus.RUNNING, second.find(task.id()).orElseThrow().status());
+                assertTrue(second.cancel(task.id()));
+                assertTrue(canceled.await(5, TimeUnit.SECONDS));
+                assertEquals(TaskStatus.CANCELED, waitForTerminal(second, task.id()).status());
+                assertEquals(0, unexpectedRuns.get());
+            }
+        }
+    }
+
+    @Test
+    void standbyRecoversOnlyAfterTheOldWorkerHasExited(@TempDir Path tempDir) throws Exception {
+        Path database = tempDir.resolve("tasks.db");
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch stopping = new CountDownLatch(1);
+        CountDownLatch releaseWorker = new CountDownLatch(1);
+        CountDownLatch recovered = new CountDownLatch(1);
+        try (DurableTaskManager owner = new DurableTaskManager(database, prompt -> {
+            started.countDown();
+            while (true) {
+                try {
+                    assertTrue(releaseWorker.await(5, TimeUnit.SECONDS));
+                    return "old run";
+                } catch (InterruptedException e) {
+                    stopping.countDown();
+                }
+            }
+        }, 1);
+             DurableTaskManager standby = new DurableTaskManager(database, prompt -> {
+                 recovered.countDown();
+                 return "recovered";
+             }, 1)) {
+            owner.start();
+            standby.start();
+            DurableTask task = owner.enqueue("finish after restart");
+            assertTrue(started.await(5, TimeUnit.SECONDS));
+
+            owner.close();
+            assertTrue(stopping.await(5, TimeUnit.SECONDS));
+            assertFalse(recovered.await(600, TimeUnit.MILLISECONDS));
+            assertEquals(TaskStatus.RUNNING, standby.find(task.id()).orElseThrow().status());
+
+            releaseWorker.countDown();
+            DurableTask completed = waitForTerminal(standby, task.id());
+            assertEquals(TaskStatus.COMPLETED, completed.status());
+            assertEquals("recovered", completed.result());
+        } finally {
+            releaseWorker.countDown();
         }
     }
 
