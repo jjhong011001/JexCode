@@ -251,7 +251,7 @@ public final class TuiSessionController implements AutoCloseable {
     }
 
     private void runAgentTask(String input, RunMode mode) {
-        CancellationToken token = CancellationContext.startRun();
+        CancellationToken token = new CancellationToken();
         currentToken = token;
         statusPane.startTimer();
         statusPane.updateMode(mode.label);
@@ -259,24 +259,24 @@ public final class TuiSessionController implements AutoCloseable {
         String output;
         try {
             SnapshotService snapshots = reactAgent.getToolRegistry().getSnapshotService();
-            output = captureStdout(() -> snapshots.runTurn(mode.name().toLowerCase(), input, () -> switch (mode) {
-                    case REACT -> reactAgent.run(input);
-                    case PLAN -> new PlanExecuteAgent(
-                            llmClient,
-                            reactAgent.getToolRegistry(),
-                            reactAgent.getMemoryManager(),
-                            (goal, plan) -> PlanExecuteAgent.PlanReviewDecision.execute()
-                    ).run(input);
-                    case TEAM -> new AgentOrchestrator(
-                            llmClient,
-                            reactAgent.getToolRegistry(),
-                            reactAgent.getMemoryManager()
-                    ).run(input);
-                }));
+            output = CancellationContext.call(token, () -> captureStdout(
+                    () -> snapshots.runTurn(mode.name().toLowerCase(), input, () -> switch (mode) {
+                        case REACT -> reactAgent.run(input);
+                        case PLAN -> new PlanExecuteAgent(
+                                llmClient,
+                                reactAgent.getToolRegistry(),
+                                reactAgent.getMemoryManager(),
+                                (goal, plan) -> PlanExecuteAgent.PlanReviewDecision.execute()
+                        ).run(input);
+                        case TEAM -> new AgentOrchestrator(
+                                llmClient,
+                                reactAgent.getToolRegistry(),
+                                reactAgent.getMemoryManager()
+                        ).run(input);
+                    })));
         } catch (Exception e) {
             output = "执行失败: " + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
         } finally {
-            CancellationContext.clear(token);
             currentToken = null;
             ui(() -> {
                 statusPane.stopTimer();

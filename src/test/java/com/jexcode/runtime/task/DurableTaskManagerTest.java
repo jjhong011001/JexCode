@@ -1,10 +1,13 @@
 package com.jexcode.runtime.task;
 
+import com.jexcode.runtime.CancellationContext;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -57,6 +60,53 @@ class DurableTaskManagerTest {
             DurableTask canceled = waitForTerminal(manager, task.id());
 
             assertEquals(TaskStatus.CANCELED, canceled.status());
+        }
+    }
+
+    @Test
+    void cancelsOnlyTheSelectedTaskAndReusesItsWorker(@TempDir Path tempDir) throws Exception {
+        CountDownLatch bothStarted = new CountDownLatch(2);
+        CountDownLatch releaseOther = new CountDownLatch(1);
+        CountDownLatch canceledWorkerObservedSignal = new CountDownLatch(1);
+        try (DurableTaskManager manager = new DurableTaskManager(tempDir.resolve("tasks.db"), prompt -> {
+            assertNotNull(CancellationContext.current());
+            assertFalse(CancellationContext.isCancelled());
+            if ("cancel me".equals(prompt)) {
+                bothStarted.countDown();
+                try {
+                    Thread.sleep(5000);
+                } catch (InterruptedException e) {
+                    assertTrue(CancellationContext.isCancelled());
+                    canceledWorkerObservedSignal.countDown();
+                    Thread.currentThread().interrupt();
+                    throw e;
+                }
+                return "too late";
+            }
+            if ("other task".equals(prompt)) {
+                bothStarted.countDown();
+                assertTrue(releaseOther.await(5, TimeUnit.SECONDS));
+                assertFalse(CancellationContext.isCancelled());
+            }
+            return "done:" + prompt;
+        }, 2)) {
+            manager.start();
+            DurableTask canceled = manager.enqueue("cancel me");
+            DurableTask other = manager.enqueue("other task");
+            assertTrue(bothStarted.await(5, TimeUnit.SECONDS));
+
+            assertTrue(manager.cancel(" " + canceled.id() + " "));
+            assertTrue(canceledWorkerObservedSignal.await(5, TimeUnit.SECONDS));
+            DurableTask next = manager.enqueue("next task");
+            assertEquals("done:next task", waitForTerminal(manager, next.id()).result());
+
+            releaseOther.countDown();
+            assertEquals("done:other task", waitForTerminal(manager, other.id()).result());
+            DurableTask canceledTask = waitForTerminal(manager, canceled.id());
+            assertEquals(TaskStatus.CANCELED, canceledTask.status());
+            assertEquals("用户取消", canceledTask.error());
+        } finally {
+            releaseOther.countDown();
         }
     }
 

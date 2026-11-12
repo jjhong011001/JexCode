@@ -15,6 +15,7 @@
   - `failed`
   - `canceled`
 - Worker Pool：默认 2 个后台 worker，可用 `JEXCODE_TASK_WORKERS` 或 `-Djexcode.task.workers` 覆盖
+- 每个后台任务有独立的取消信号。取消时先保存 `canceled` 状态，再关闭该任务的模型 HTTP 调用并中断对应 worker。
 - 进程启动时把上次残留的 `running` 任务恢复为 `enqueued`
 - CLI 命令：
   - `/task` 或 `/task list [N]`
@@ -59,7 +60,6 @@ java -jar target/jexcode-1.0-SNAPSHOT.jar serve --http --port 8080
 
 - Runtime API MVP 是事件回放式 SSE，不做长连接持续阻塞推送
 - 后台任务 runner 使用 headless ReAct Agent，不复用交互式 TUI 的 HITL 输入
-- 后台任务取消通过线程中断 + 状态标记实现；正在进行的远端 LLM HTTP 调用能否立即停止取决于底层 client 边界
 - Runtime API 当前不模拟完整 OpenAI Assistants API schema，只保留兼容方向的 threads / turns / events 主路径
 
 ## 验证

@@ -1,5 +1,8 @@
 package com.jexcode.runtime.task;
 
+import com.jexcode.runtime.CancellationContext;
+import com.jexcode.runtime.CancellationToken;
+
 import java.io.Closeable;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -10,7 +13,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.HashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -20,9 +23,10 @@ public class DurableTaskManager implements Closeable {
     private final TaskRunner runner;
     private final int workerCount;
     private final Connection connection;
-    private final Map<String, Thread> runningTasks = new ConcurrentHashMap<>();
+    private final Map<String, RunningTask> runningTasks = new HashMap<>();
     private ExecutorService workers;
     private volatile boolean running;
+    private boolean closed;
 
     public DurableTaskManager(Path dbPath, TaskRunner runner, int workerCount) throws SQLException {
         this.dbPath = dbPath;
@@ -69,6 +73,9 @@ public class DurableTaskManager implements Closeable {
     }
 
     public synchronized void start() {
+        if (closed) {
+            throw new IllegalStateException("后台任务管理器已关闭");
+        }
         if (running) {
             return;
         }
@@ -144,11 +151,13 @@ public class DurableTaskManager implements Closeable {
         if (current.isEmpty() || current.get().terminal()) {
             return false;
         }
-        Thread thread = runningTasks.remove(id);
-        if (thread != null) {
-            thread.interrupt();
+        DurableTask task = current.get();
+        markTerminal(task.id(), TaskStatus.CANCELED, task.result(), "用户取消", task.startedAt());
+        RunningTask active = runningTasks.get(task.id());
+        if (active != null) {
+            active.token().cancel();
+            active.worker().interrupt();
         }
-        markTerminal(id, TaskStatus.CANCELED, current.get().result(), "用户取消", current.get().startedAt());
         notifyAll();
         return true;
     }
@@ -159,40 +168,32 @@ public class DurableTaskManager implements Closeable {
 
     private void workerLoop() {
         while (running) {
-            DurableTask task = null;
             try {
-                task = claimNext();
-                if (task == null) {
+                RunningTask active = claimNext();
+                if (active == null) {
                     synchronized (this) {
-                        wait(300);
+                        if (running) {
+                            wait(300);
+                        }
                     }
                     continue;
                 }
-                String taskId = task.id();
-                runningTasks.put(taskId, Thread.currentThread());
-                Instant startedAt = Instant.now();
+                DurableTask task = active.task();
                 try {
-                    String result = runner.run(task.prompt());
-                    synchronized (this) {
-                        DurableTask latest = find(taskId).orElse(null);
-                        if (latest != null && latest.status() != TaskStatus.CANCELED) {
-                            markTerminal(taskId, TaskStatus.COMPLETED, result, null, startedAt);
-                        }
+                    if (!active.token().isCancelled()) {
+                        String result = CancellationContext.call(active.token(), () -> runner.run(task.prompt()));
+                        finishRunningTask(task, TaskStatus.COMPLETED, result, null);
                     }
                 } catch (InterruptedException e) {
-                    Thread.interrupted();
-                    synchronized (this) {
-                        markTerminal(taskId, TaskStatus.CANCELED, "", "任务线程被中断", startedAt);
-                    }
+                    finishRunningTask(task, TaskStatus.CANCELED, "", "任务线程被中断");
                 } catch (Exception e) {
-                    synchronized (this) {
-                        DurableTask latest = find(taskId).orElse(null);
-                        if (latest != null && latest.status() != TaskStatus.CANCELED) {
-                            markTerminal(taskId, TaskStatus.FAILED, "", e.getMessage(), startedAt);
-                        }
-                    }
+                    finishRunningTask(task, TaskStatus.FAILED, "", e.getMessage());
                 } finally {
-                    runningTasks.remove(taskId);
+                    synchronized (this) {
+                        runningTasks.remove(task.id());
+                        // Interrupts requested for this task must not carry over to the next task.
+                        Thread.interrupted();
+                    }
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -203,7 +204,10 @@ public class DurableTaskManager implements Closeable {
         }
     }
 
-    private synchronized DurableTask claimNext() throws SQLException {
+    private synchronized RunningTask claimNext() throws SQLException {
+        if (!running) {
+            return null;
+        }
         connection.setAutoCommit(false);
         try {
             DurableTask task = null;
@@ -241,12 +245,21 @@ public class DurableTaskManager implements Closeable {
                 }
             }
             connection.commit();
-            return find(task.id()).orElse(task);
+            DurableTask claimed = find(task.id()).orElseThrow();
+            RunningTask active = new RunningTask(claimed, new CancellationToken(), Thread.currentThread());
+            runningTasks.put(claimed.id(), active);
+            return active;
         } catch (SQLException e) {
             connection.rollback();
             throw e;
         } finally {
             connection.setAutoCommit(true);
+        }
+    }
+
+    private synchronized void finishRunningTask(DurableTask task, TaskStatus status, String result, String error) {
+        if (running && find(task.id()).filter(latest -> latest.status() == TaskStatus.RUNNING).isPresent()) {
+            markTerminal(task.id(), status, result, error, task.startedAt());
         }
     }
 
@@ -327,20 +340,33 @@ public class DurableTaskManager implements Closeable {
     }
 
     @Override
-    public synchronized void close() {
-        running = false;
-        notifyAll();
-        if (workers != null) {
-            workers.shutdownNow();
+    public void close() {
+        ExecutorService executor;
+        synchronized (this) {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            running = false;
+            runningTasks.values().forEach(active -> active.token().cancel());
+            executor = workers;
+            notifyAll();
+        }
+        if (executor != null) {
+            executor.shutdownNow();
             try {
-                workers.awaitTermination(2, TimeUnit.SECONDS);
+                executor.awaitTermination(2, TimeUnit.SECONDS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
         }
-        try {
-            connection.close();
-        } catch (SQLException ignored) {
+        synchronized (this) {
+            try {
+                connection.close();
+            } catch (SQLException ignored) {
+            }
         }
     }
+
+    private record RunningTask(DurableTask task, CancellationToken token, Thread worker) {}
 }

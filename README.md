@@ -96,6 +96,8 @@ flowchart TB
 | **Plan-and-Execute** | 先生成带依赖关系的执行计划，经确认后按 DAG 批次执行 | 跨模块重构、迁移、复杂交付任务 |
 | **Multi-Agent** | Planner 拆解、Worker 执行、Reviewer 审查并反馈修正 | 需要角色分工和质量复核的综合任务 |
 
+CLI 执行期间可按 `Esc` 取消当前任务，任务退出后会回到输入提示符。`/task cancel <task_id>` 取消指定后台任务。
+
 ## 快速开始
 
 ### 运行要求

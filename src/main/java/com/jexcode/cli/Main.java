@@ -86,12 +86,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.Callable;
-import java.util.concurrent.CancellationException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
@@ -832,7 +829,6 @@ public class Main {
                 SnapshotService snapshotService = reactAgent.getToolRegistry().getSnapshotService();
                 renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, snapshotMode));
                 String response = runWithCancelSupport(terminal,
-                        ui,
                         () -> snapshotService.runTurn(snapshotMode, taskInput, runTask::call));
                 if (!"react".equals(snapshotMode)) {
                     renderer.updateStatus(statusInfo(reactAgent, mcpServerManager, skillRegistry, "idle"));
@@ -1105,14 +1101,12 @@ public class Main {
         return new AgentOrchestrator(llmClient, reactAgent.getToolRegistry(), reactAgent.getMemoryManager(), out);
     }
 
-    private static String runWithCancelSupport(Terminal terminal, PrintStream out, Callable<String> task) {
-        CancellationToken token = CancellationContext.startRun();
-        ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
-            Thread thread = new Thread(r, "jexcode-agent-runner");
-            thread.setDaemon(true);
-            return thread;
-        });
-        Future<String> future = executor.submit(task);
+    static String runWithCancelSupport(Terminal terminal, Callable<String> task) {
+        CancellationToken token = new CancellationToken();
+        FutureTask<String> future = new FutureTask<>(() -> CancellationContext.call(token, task));
+        Thread worker = new Thread(future, "jexcode-agent-runner");
+        worker.setDaemon(true);
+        worker.start();
         // 进入 raw mode 监听 ESC：raw mode 关 ICANON / ECHO / IEXTEN 但保留 ISIG，所以 Ctrl+C 仍能终止 JexCode。
         Attributes original = null;
         try {
@@ -1126,9 +1120,10 @@ public class Main {
             while (!future.isDone()) {
                 if (original != null && readEscCancel(terminal)) {
                     token.cancel();
-                    future.cancel(true);
-                    executor.shutdownNow();
-                    return "⏹️ 已请求取消当前任务。";
+                    worker.interrupt();
+                    // Let the run finish updating history and scheduling its snapshot before accepting more input.
+                    future.get();
+                    return "⏹️ 已取消当前任务。";
                 }
                 try {
                     return future.get(150, TimeUnit.MILLISECONDS);
@@ -1137,14 +1132,15 @@ public class Main {
                 }
             }
             return future.get();
-        } catch (CancellationException e) {
-            return "⏹️ 已取消当前任务。";
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             token.cancel();
-            future.cancel(true);
+            worker.interrupt();
             return "⏹️ 已取消当前任务。";
         } catch (ExecutionException e) {
+            if (token.isCancelled()) {
+                return "⏹️ 已取消当前任务。";
+            }
             Throwable cause = e.getCause();
             String message = cause == null || cause.getMessage() == null ? "未知错误" : cause.getMessage();
             return "❌ 执行失败: " + message;
@@ -1155,8 +1151,6 @@ public class Main {
                 } catch (Exception ignored) {
                 }
             }
-            CancellationContext.clear(token);
-            executor.shutdownNow();
         }
     }
 

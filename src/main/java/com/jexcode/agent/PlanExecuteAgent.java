@@ -227,6 +227,9 @@ public class PlanExecuteAgent {
                 return "⏹️ 已取消当前计划执行。";
             }
             PlanRunOutcome outcome = runWithPlan(userInput, streamState);
+            if (CancellationContext.isCancelled()) {
+                return "⏹️ 已取消当前计划执行。";
+            }
             if (outcome.persistAssistantMessage() && outcome.result() != null && !outcome.result().isBlank()) {
                 memoryManager.addAssistantMessage("[计划结果] " + outcome.result());
             }
@@ -235,6 +238,9 @@ public class PlanExecuteAgent {
             }
             return outcome.result();
         } catch (Exception e) {
+            if (CancellationContext.isCancelled()) {
+                return "⏹️ 已取消当前计划执行。";
+            }
             log.error("Plan run failed", e);
             String errorMessage = "❌ 执行失败: " + e.getMessage();
             memoryManager.addAssistantMessage(errorMessage);
@@ -251,7 +257,7 @@ public class PlanExecuteAgent {
     }
 
     private PlanRunOutcome reviewAndExecutePlan(ExecutionPlan plan, StreamState streamState) throws IOException {
-        while (true) {
+        while (!CancellationContext.isCancelled()) {
             PlanReviewDecision decision = reviewHandler.review(plan.getGoal(), plan);
             if (decision == null || decision.action() == PlanReviewAction.EXECUTE) {
                 return PlanRunOutcome.executed(executePlan(plan, streamState));
@@ -269,6 +275,7 @@ public class PlanExecuteAgent {
             out.println("📝 已收到补充要求，正在重新规划...\n");
             plan = planner.createPlan(plan.getGoal() + "\n补充要求：" + feedback);
         }
+        return PlanRunOutcome.canceled("⏹️ 已取消当前计划执行。");
     }
 
     private String executePlan(ExecutionPlan plan, StreamState streamState) throws IOException {
